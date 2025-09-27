@@ -1,0 +1,672 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler, RobustScaler, PowerTransformer
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, cross_val_score
+from sklearn.metrics import (classification_report, confusion_matrix, precision_recall_curve,
+                            roc_curve, auc, precision_score, recall_score, f1_score,
+                            average_precision_score, make_scorer, accuracy_score)
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier,
+                             AdaBoostClassifier, VotingClassifier, StackingClassifier)
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+
+# Handle missing packages gracefully
+try:
+    from catboost import CatBoostClassifier
+    CATBOOST_AVAILABLE = True
+except ImportError:
+    print("⚠️ CatBoost not available. Some models will be disabled.")
+    CATBOOST_AVAILABLE = False
+
+from imblearn.over_sampling import SMOTE, ADASYN
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.pipeline import Pipeline as ImbPipeline
+from sklearn.pipeline import Pipeline
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif
+import pickle
+import time
+import warnings
+from IPython.display import display, HTML
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+
+warnings.filterwarnings('ignore')
+
+class EnhancedCreditCardFraudDetection:
+    def __init__(self, data_path=None):
+        """Initialize the Enhanced Credit Card Fraud Detection System"""
+        self.data = None
+        self.X = None
+        self.y = None
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.best_model = None
+        self.model_name = None
+        self.scaler = None
+        self.feature_selector = None
+        self.models_performance = pd.DataFrame(columns=['Model', 'Accuracy', 'Precision',
+                                                     'Recall', 'F1', 'ROC AUC', 'PR AUC',
+                                                     'Training Time', 'Specificity', 'F2_Score'])
+        self.training_history = {}
+
+        if data_path:
+            self.load_data(data_path)
+
+    def load_data(self, data_path):
+        """Load the credit card transaction dataset"""
+        print("🚀 Loading dataset...")
+        try:
+            self.data = pd.read_csv(data_path)
+            print(f"✅ Dataset loaded successfully with {self.data.shape[0]:,} rows and {self.data.shape[1]} columns")
+
+            # Display basic dataset info
+            display(HTML(f"""
+            <div style="background-color:#f0f8ff; padding:15px; border-radius:10px; border-left:5px solid #4CAF50;">
+                <h3 style="color:#2E86AB;">📊 Dataset Overview</h3>
+                <p><strong>Shape:</strong> {self.data.shape[0]:,} transactions × {self.data.shape[1]} features</p>
+                <p><strong>Memory Usage:</strong> {self.data.memory_usage(deep=True).sum() / 1024**2:.2f} MB</p>
+                <p><strong>Columns:</strong> {', '.join(self.data.columns[:5])}... and {len(self.data.columns)-5} more</p>
+            </div>
+            """))
+            return True
+        except Exception as e:
+            print(f"❌ Error loading dataset: {e}")
+            return False
+
+    def enhanced_eda(self):
+        """Perform enhanced exploratory data analysis with interactive visualizations"""
+        if self.data is None:
+            print("❌ No data loaded. Please load data first.")
+            return
+
+        print("\n" + "="*80)
+        print("🔍 ENHANCED EXPLORATORY DATA ANALYSIS")
+        print("="*80)
+
+        # Create a comprehensive EDA dashboard
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=('Class Distribution', 'Transaction Amount Distribution',
+                          'Time vs Amount (Normal)', 'Time vs Amount (Fraud)',
+                          'Feature Correlation Heatmap', 'Hourly Transaction Pattern'),
+            specs=[[{"secondary_y": False}, {"secondary_y": False}],
+                   [{"secondary_y": False}, {"secondary_y": False}],
+                   [{"secondary_y": False}, {"secondary_y": False}]]
+        )
+
+        # 1. Class Distribution with enhanced styling
+        class_counts = self.data['Class'].value_counts()
+        colors = ['#2E86AB', '#A23B72']
+
+        fig.add_trace(
+            go.Bar(x=['Normal (0)', 'Fraud (1)'], y=class_counts.values,
+                  marker_color=colors, text=class_counts.values,
+                  textposition='auto', name='Class Distribution'),
+            row=1, col=1
+        )
+
+        # 2. Amount distribution (log scale)
+        normal_amounts = np.log1p(self.data[self.data['Class'] == 0]['Amount'])
+        fraud_amounts = np.log1p(self.data[self.data['Class'] == 1]['Amount'])
+
+        fig.add_trace(go.Histogram(x=normal_amounts, nbinsx=50, name='Normal', opacity=0.7,
+                                 marker_color='#2E86AB'), row=1, col=2)
+        fig.add_trace(go.Histogram(x=fraud_amounts, nbinsx=50, name='Fraud', opacity=0.7,
+                                 marker_color='#A23B72'), row=1, col=2)
+
+        # 3. Time vs Amount scatter plots
+        normal_data = self.data[self.data['Class'] == 0]
+        fraud_data = self.data[self.data['Class'] == 1]
+
+        fig.add_trace(go.Scatter(x=normal_data['Time'], y=np.log1p(normal_data['Amount']),
+                               mode='markers', name='Normal', opacity=0.3,
+                               marker=dict(color='#2E86AB', size=3)), row=2, col=1)
+
+        fig.add_trace(go.Scatter(x=fraud_data['Time'], y=np.log1p(fraud_data['Amount']),
+                               mode='markers', name='Fraud', opacity=0.7,
+                               marker=dict(color='#A23B72', size=5)), row=2, col=2)
+
+        # 4. Correlation heatmap (top 15 features)
+        corr_matrix = self.data.corr()
+        top_features = corr_matrix.nlargest(15, 'Class')['Class'].index
+        top_corr = self.data[top_features].corr()
+
+        fig.add_trace(go.Heatmap(z=top_corr.values, x=top_corr.columns, y=top_corr.columns,
+                               colorscale='RdBu_r', zmid=0), row=3, col=1)
+
+        # 5. Hourly pattern
+        if 'Time' in self.data.columns:
+            self.data['Hour'] = (self.data['Time'] % (24*3600)) / 3600
+            hourly_counts = self.data.groupby(['Hour', 'Class']).size().unstack(fill_value=0)
+
+            fig.add_trace(go.Scatter(x=hourly_counts.index, y=hourly_counts[0],
+                                   name='Normal (Hourly)', line=dict(color='#2E86AB')), row=3, col=2)
+            fig.add_trace(go.Scatter(x=hourly_counts.index, y=hourly_counts[1],
+                                   name='Fraud (Hourly)', line=dict(color='#A23B72')), row=3, col=2)
+
+        fig.update_layout(height=1200, showlegend=True, title_text="📊 Comprehensive Fraud Detection EDA Dashboard")
+        fig.show()
+
+        # Enhanced statistical summary
+        display(HTML("""
+        <div style="background-color:#fff3cd; padding:15px; border-radius:10px; border-left:5px solid #ffc107;">
+            <h3 style="color:#856404;">📈 Statistical Summary</h3>
+        </div>
+        """))
+
+        # Create a beautiful summary table
+        summary_data = {
+            'Metric': ['Total Transactions', 'Fraudulent Transactions', 'Fraud Percentage',
+                      'Average Amount (Normal)', 'Average Amount (Fraud)',
+                      'Data Quality Score'],
+            'Value': [
+                f"{len(self.data):,}",
+                f"{class_counts[1]:,}",
+                f"{(class_counts[1]/len(self.data)*100):.4f}%",
+                f"${self.data[self.data['Class']==0]['Amount'].mean():.2f}",
+                f"${self.data[self.data['Class']==1]['Amount'].mean():.2f}",
+                f"{(1 - self.data.isnull().sum().sum()/len(self.data))*100:.1f}%"
+            ]
+        }
+
+        summary_df = pd.DataFrame(summary_data)
+        display(HTML(summary_df.to_html(classes='table table-striped', index=False)))
+
+    def advanced_preprocessing(self, test_size=0.2, random_state=42, sampling_strategy='auto'):
+        """Enhanced preprocessing with detailed progress tracking"""
+        if self.data is None:
+            print("❌ No data loaded. Please load data first.")
+            return
+
+        print("\n" + "="*80)
+        print("⚙️ ADVANCED DATA PREPROCESSING")
+        print("="*80)
+
+        # Progress tracking
+        steps = ["Feature Engineering", "Scaling", "Feature Selection", "Train-Test Split", "Resampling"]
+        current_step = 0
+
+        def update_progress(step_name):
+            nonlocal current_step
+            current_step += 1
+            print(f"🔹 [{current_step}/{len(steps)}] {step_name}...")
+
+        update_progress("Feature Engineering")
+        # Feature engineering (same as before)
+        if 'Time' in self.data.columns:
+            self.data['Hour'] = (self.data['Time'] % (24*3600)) / 3600
+            self.data['Day'] = (self.data['Time'] // (24*3600)) % 7
+            self.data['Hour_sin'] = np.sin(2 * np.pi * self.data['Hour']/24)
+            self.data['Hour_cos'] = np.cos(2 * np.pi * self.data['Hour']/24)
+            self.data['Day_sin'] = np.sin(2 * np.pi * self.data['Day']/7)
+            self.data['Day_cos'] = np.cos(2 * np.pi * self.data['Day']/7)
+            X = self.data.drop(['Class', 'Time', 'Hour', 'Day'], axis=1)
+        else:
+            X = self.data.drop(['Class'], axis=1)
+
+        y = self.data['Class']
+
+        update_progress("Scaling and Transformation")
+        # Advanced preprocessing pipeline
+        preprocessor = Pipeline([
+            ('scaler', RobustScaler()),
+            ('power_transform', PowerTransformer(method='yeo-johnson')),
+            ('feature_selection', SelectKBest(f_classif, k=20))
+        ])
+
+        X_processed = preprocessor.fit_transform(X, y)
+        self.scaler = preprocessor.named_steps['scaler']
+        self.feature_selector = preprocessor.named_steps['feature_selection']
+
+        selected_features = X.columns[preprocessor.named_steps['feature_selection'].get_support()]
+        X_processed_df = pd.DataFrame(X_processed, columns=selected_features)
+
+        update_progress("Train-Test Split")
+        # Split data
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X_processed_df, y, test_size=test_size, random_state=random_state, stratify=y)
+
+        update_progress("Resampling")
+        # Handle class imbalance
+        smote = SMOTE(sampling_strategy=0.1, random_state=random_state)
+        under = RandomUnderSampler(sampling_strategy=0.5, random_state=random_state)
+        pipeline = ImbPipeline(steps=[('over', smote), ('under', under)])
+        self.X_train, self.y_train = pipeline.fit_resample(self.X_train, self.y_train)
+
+        # Enhanced results display
+        display(HTML(f"""
+        <div style="background-color:#e8f5e8; padding:15px; border-radius:10px; border-left:5px solid #4CAF50;">
+            <h3 style="color:#2E7D32;">✅ Preprocessing Complete</h3>
+            <p><strong>Training Set:</strong> {self.X_train.shape[0]:,} samples</p>
+            <p><strong>Test Set:</strong> {self.X_test.shape[0]:,} samples</p>
+            <p><strong>Selected Features:</strong> {len(selected_features)} out of {X.shape[1]}</p>
+            <p><strong>Class Distribution After Resampling:</strong></p>
+            <p>Normal: {sum(self.y_train == 0):,} | Fraud: {sum(self.y_train == 1):,}</p>
+        </div>
+        """))
+
+        self.X = X_processed_df
+        self.y = y
+
+        # Display selected features
+        print("\n🎯 Top 10 Selected Features:")
+        feature_scores = preprocessor.named_steps['feature_selection'].scores_
+        feature_df = pd.DataFrame({
+            'Feature': selected_features,
+            'Importance_Score': feature_scores[preprocessor.named_steps['feature_selection'].get_support()]
+        }).sort_values('Importance_Score', ascending=False).head(10)
+
+        display(HTML(feature_df.to_html(classes='table table-hover', index=False)))
+
+    def _get_stacking_classifier(self):
+        """Create a stacking classifier with available models"""
+        estimators = [
+            ('xgb', XGBClassifier(learning_rate=0.01, n_estimators=100, random_state=42)),
+            ('lgbm', LGBMClassifier(learning_rate=0.01, n_estimators=100, random_state=42, verbose=-1)),
+            ('rf', RandomForestClassifier(n_estimators=100, random_state=42))
+        ]
+
+        return StackingClassifier(
+            estimators=estimators,
+            final_estimator=LogisticRegression(),
+            cv=5
+        )
+
+    def train_enhanced_models(self):
+        """Enhanced model training with real-time progress tracking"""
+        if self.X_train is None or self.y_train is None:
+            print("❌ Data not preprocessed. Please run advanced_preprocessing() first.")
+            return
+
+        print("\n" + "="*80)
+        print("🤖 TRAINING ENHANCED MODELS")
+        print("="*80)
+
+        # Enhanced model configurations (only use available models)
+        models = {
+            'XGBoost': XGBClassifier(
+                learning_rate=0.01, n_estimators=1000, max_depth=5,
+                objective='binary:logistic', scale_pos_weight=100, random_state=42
+            ),
+            'LightGBM': LGBMClassifier(
+                learning_rate=0.01, n_estimators=1000, num_leaves=31,
+                class_weight='balanced', random_state=42, verbose=-1
+            ),
+            'Random Forest': RandomForestClassifier(
+                n_estimators=500, max_depth=10, class_weight='balanced_subsample',
+                random_state=42, n_jobs=-1
+            ),
+            'Stacking Ensemble': self._get_stacking_classifier()
+        }
+
+        # Add CatBoost only if available
+        if CATBOOST_AVAILABLE:
+            models['CatBoost'] = CatBoostClassifier(
+                iterations=1000, learning_rate=0.01, depth=6,
+                auto_class_weights='Balanced', random_state=42, verbose=0
+            )
+
+        # Training progress visualization
+        fig = go.Figure()
+        results = []
+
+        for i, (name, model) in enumerate(models.items()):
+            print(f"\n🎯 Training {name}...")
+            start_time = time.time()
+
+            try:
+                # Train model
+                model.fit(self.X_train, self.y_train)
+                training_time = time.time() - start_time
+
+                # Predictions
+                y_pred = model.predict(self.X_test)
+                y_pred_proba = model.predict_proba(self.X_test)[:, 1]
+
+                # Enhanced metrics calculation
+                accuracy = accuracy_score(self.y_test, y_pred)
+                precision = precision_score(self.y_test, y_pred)
+                recall = recall_score(self.y_test, y_pred)
+                f1 = f1_score(self.y_test, y_pred)
+
+                # Specificity (True Negative Rate)
+                tn = confusion_matrix(self.y_test, y_pred)[0, 0]
+                fp = confusion_matrix(self.y_test, y_pred)[0, 1]
+                specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+
+                # F2 Score (emphasizes recall)
+                f2_score_val = (5 * precision * recall) / (4 * precision + recall) if (precision + recall) > 0 else 0
+
+                # AUC scores
+                fpr, tpr, _ = roc_curve(self.y_test, y_pred_proba)
+                roc_auc = auc(fpr, tpr)
+                precision_curve, recall_curve, _ = precision_recall_curve(self.y_test, y_pred_proba)
+                pr_auc = auc(recall_curve, precision_curve)
+
+                # Store results
+                results.append({
+                    'Model': name, 'Accuracy': accuracy, 'Precision': precision,
+                    'Recall': recall, 'F1': f1, 'ROC AUC': roc_auc, 'PR AUC': pr_auc,
+                    'Training Time': training_time, 'Specificity': specificity, 'F2_Score': f2_score_val
+                })
+
+                # Enhanced model evaluation display
+                self._display_model_performance(name, accuracy, precision, recall, f1,
+                                              roc_auc, pr_auc, training_time, specificity, f2_score_val)
+
+            except Exception as e:
+                print(f"❌ Error training {name}: {e}")
+                continue
+
+        # Update performance DataFrame
+        self.models_performance = pd.DataFrame(results)
+
+        if not self.models_performance.empty:
+            # Select best model
+            best_model_idx = self.models_performance['F1'].idxmax()
+            self.best_model = models[self.models_performance.loc[best_model_idx, 'Model']]
+            self.model_name = self.models_performance.loc[best_model_idx, 'Model']
+
+            # Final best model announcement
+            best_metrics = self.models_performance.loc[best_model_idx]
+            display(HTML(f"""
+            <div style="background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color:white; padding:20px; border-radius:15px; text-align:center;">
+                <h2>🏆 BEST MODEL SELECTED: {self.model_name}</h2>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 15px;">
+                    <div style="background:rgba(255,255,255,0.2); padding:10px; border-radius:8px;">
+                        <h4>Accuracy</h4>
+                        <h3>{best_metrics['Accuracy']:.4f}</h3>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.2); padding:10px; border-radius:8px;">
+                        <h4>F1 Score</h4>
+                        <h3>{best_metrics['F1']:.4f}</h3>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.2); padding:10px; border-radius:8px;">
+                        <h4>ROC AUC</h4>
+                        <h3>{best_metrics['ROC AUC']:.4f}</h3>
+                    </div>
+                </div>
+            </div>
+            """))
+        else:
+            print("❌ No models were successfully trained.")
+
+    def _display_model_performance(self, name, accuracy, precision, recall, f1,
+                                 roc_auc, pr_auc, training_time, specificity, f2_score):
+        """Display enhanced model performance metrics"""
+        # Color coding based on performance
+        def get_color(value, threshold=0.9):
+            return "#4CAF50" if value >= threshold else "#FF9800" if value >= 0.8 else "#F44336"
+
+        display(HTML(f"""
+        <div style="background-color:#f8f9fa; padding:15px; border-radius:10px; border-left:5px solid {get_color(f1)}; margin:10px 0;">
+            <h4 style="color:#343a40;">{name} Performance Summary</h4>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+                <div style="text-align: center; background:white; padding:10px; border-radius:5px;">
+                    <div style="font-size:12px; color:#6c757d;">Accuracy</div>
+                    <div style="font-size:18px; font-weight:bold; color:{get_color(accuracy)};">{accuracy:.4f}</div>
+                </div>
+                <div style="text-align: center; background:white; padding:10px; border-radius:5px;">
+                    <div style="font-size:12px; color:#6c757d;">Precision</div>
+                    <div style="font-size:18px; font-weight:bold; color:{get_color(precision)};">{precision:.4f}</div>
+                </div>
+                <div style="text-align: center; background:white; padding:10px; border-radius:5px;">
+                    <div style="font-size:12px; color:#6c757d;">Recall</div>
+                    <div style="font-size:18px; font-weight:bold; color:{get_color(recall)};">{recall:.4f}</div>
+                </div>
+                <div style="text-align: center; background:white; padding:10px; border-radius:5px;">
+                    <div style="font-size:12px; color:#6c757d;">F1 Score</div>
+                    <div style="font-size:18px; font-weight:bold; color:{get_color(f1)};">{f1:.4f}</div>
+                </div>
+            </div>
+            <div style="margin-top:10px; font-size:12px; color:#6c757d;">
+                Training Time: {training_time:.2f}s | ROC AUC: {roc_auc:.4f} | Specificity: {specificity:.4f}
+            </div>
+        </div>
+        """))
+
+    def compare_models_performance(self):
+        """Enhanced model comparison with interactive visualization"""
+        if self.models_performance.empty:
+            print("❌ No models trained yet. Please run train_enhanced_models() first.")
+            return
+
+        print("\n" + "="*80)
+        print("📈 MODEL PERFORMANCE COMPARISON")
+        print("="*80)
+
+        # Create interactive radar chart
+        metrics = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC AUC', 'Specificity']
+        fig = go.Figure()
+
+        for _, row in self.models_performance.iterrows():
+            fig.add_trace(go.Scatterpolar(
+                r=[row[metric] for metric in metrics],
+                theta=metrics,
+                fill='toself',
+                name=row['Model']
+            ))
+
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            showlegend=True,
+            title="Radar Chart Comparison of Model Performance"
+        )
+        fig.show()
+
+        # Enhanced performance table
+        styled_df = self.models_performance.style\
+            .background_gradient(subset=['Accuracy', 'Precision', 'Recall', 'F1', 'ROC AUC'],
+                               cmap='YlGnBu')\
+            .format({
+                'Accuracy': '{:.4f}',
+                'Precision': '{:.4f}',
+                'Recall': '{:.4f}',
+                'F1': '{:.4f}',
+                'ROC AUC': '{:.4f}',
+                'PR AUC': '{:.4f}',
+                'Training Time': '{:.2f}s',
+                'Specificity': '{:.4f}',
+                'F2_Score': '{:.4f}'
+            })\
+            .set_properties(**{'text-align': 'center'})
+
+        display(HTML("<h3>📊 Detailed Performance Metrics</h3>"))
+        display(styled_df)
+
+    def predict_fraud(self, transaction_data):
+        """Predict fraud probability for a transaction"""
+        if self.best_model is None:
+            print("❌ No model trained. Please train a model first.")
+            return None, None, None
+
+        try:
+            prediction = self.best_model.predict(transaction_data)[0]
+            probability = self.best_model.predict_proba(transaction_data)[0, 1]
+
+            # Determine risk level
+            if probability >= 0.7:
+                risk_level = "High"
+            elif probability >= 0.3:
+                risk_level = "Medium"
+            else:
+                risk_level = "Low"
+
+            return prediction, probability, risk_level
+        except Exception as e:
+            print(f"❌ Error making prediction: {e}")
+            return None, None, None
+
+    def save_model(self, filepath):
+        """Save the trained model to a file"""
+        if self.best_model is None:
+            print("❌ No model to save. Please train a model first.")
+            return False
+
+        try:
+            with open(filepath, 'wb') as f:
+                pickle.dump({
+                    'model': self.best_model,
+                    'model_name': self.model_name,
+                    'scaler': self.scaler,
+                    'feature_selector': self.feature_selector
+                }, f)
+            print(f"✅ Model saved successfully to {filepath}")
+            return True
+        except Exception as e:
+            print(f"❌ Error saving model: {e}")
+            return False
+
+    def real_time_detection_system(self, num_transactions=10):
+        """Enhanced real-time fraud detection with beautiful alerts"""
+        if self.best_model is None:
+            print("❌ No model loaded. Please load or train a model first.")
+            return
+
+        print("\n" + "="*80)
+        print("🔍 ENHANCED REAL-TIME FRAUD DETECTION SYSTEM")
+        print("="*80)
+
+        sample_indices = np.random.choice(len(self.X_test), num_transactions, replace=False)
+        results = []
+
+        for idx in sample_indices:
+            transaction = self.X_test.iloc[idx:idx+1]
+            actual_class = self.y_test.iloc[idx]
+            prediction, probability, risk_level = self.predict_fraud(transaction)
+
+            if prediction is None:
+                continue
+
+            # Enhanced alert system
+            alert_emoji = "🚨" if risk_level == "High" else "⚠️" if risk_level == "Medium" else "✅"
+            alert_color = "#dc3545" if risk_level == "High" else "#ffc107" if risk_level == "Medium" else "#28a745"
+
+            result = {
+                'Transaction_ID': idx,
+                'Amount': f"${transaction['Amount'].values[0]:.2f}" if 'Amount' in transaction.columns else 'N/A',
+                'Prediction': 'Fraud' if prediction == 1 else 'Normal',
+                'Probability': f"{probability:.4f}",
+                'Risk_Level': risk_level,
+                'Actual': 'Fraud' if actual_class == 1 else 'Normal',
+                'Status': 'Correct' if prediction == actual_class else 'Incorrect',
+                'Alert': alert_emoji
+            }
+            results.append(result)
+
+            # Enhanced transaction alert display
+            display(HTML(f"""
+            <div style="border:2px solid {alert_color}; border-radius:10px; padding:15px; margin:10px 0;
+                        background:linear-gradient(135deg, #f8f9fa, white);">
+                <div style="display: flex; justify-content: between; align-items: center;">
+                    <h4 style="margin:0; color:{alert_color};">{alert_emoji} Transaction #{idx}</h4>
+                    <span style="background:{alert_color}; color:white; padding:5px 10px; border-radius:15px;">
+                        {risk_level} Risk
+                    </span>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px;">
+                    <div><strong>Amount:</strong> {result['Amount']}</div>
+                    <div><strong>Prediction:</strong> {result['Prediction']}</div>
+                    <div><strong>Fraud Probability:</strong> {result['Probability']}</div>
+                    <div><strong>Actual:</strong> {result['Actual']}</div>
+                </div>
+                <div style="margin-top:10px; padding:10px; background:{alert_color}; color:white; border-radius:5px;">
+                    <strong>Action:</strong> {self._get_action_recommendation(risk_level, probability)}
+                </div>
+            </div>
+            """))
+
+        return pd.DataFrame(results)
+
+    def _get_action_recommendation(self, risk_level, probability):
+        """Get enhanced action recommendations based on risk level"""
+        actions = {
+            "High": "🚨 BLOCK TRANSACTION - Immediate security review required! Contact customer for verification.",
+            "Medium": "⚠️ FLAG FOR REVIEW - Additional verification recommended. Monitor closely.",
+            "Low": "✅ PROCESS NORMALLY - Standard transaction processing. No action required."
+        }
+        return actions.get(risk_level, "Review recommended")
+
+# Installation function for missing packages
+def install_missing_packages():
+    """Install required packages that might be missing"""
+    packages = ['catboost', 'imbalanced-learn', 'plotly', 'xgboost', 'lightgbm']
+
+    for package in packages:
+        try:
+            if package == 'catboost':
+                __import__('catboost')
+            elif package == 'imbalanced-learn':
+                __import__('imblearn')
+            elif package == 'plotly':
+                __import__('plotly')
+            elif package == 'xgboost':
+                __import__('xgboost')
+            elif package == 'lightgbm':
+                __import__('lightgbm')
+            print(f"✅ {package} is already installed")
+        except ImportError:
+            print(f"📦 Installing {package}...")
+            try:
+                import subprocess
+                subprocess.check_call(['pip', 'install', package])
+                print(f"✅ {package} installed successfully")
+            except Exception as e:
+                print(f"❌ Failed to install {package}: {e}")
+
+# Enhanced main execution with progress tracking
+if __name__ == "__main__":
+    # Check and install missing packages
+    print("🔍 Checking required packages...")
+    install_missing_packages()
+
+    # Initialize with enhanced styling
+    print("\n🎯 ENHANCED CREDIT CARD FRAUD DETECTION SYSTEM")
+    print("="*60)
+
+    fraud_detector = EnhancedCreditCardFraudDetection()
+
+    # Load dataset
+    data_path = 'creditcard.csv'  # Update with your path
+    if fraud_detector.load_data(data_path):
+        # Enhanced workflow with progress indicators
+        steps = [
+            ("Exploratory Data Analysis", fraud_detector.enhanced_eda),
+            ("Data Preprocessing", fraud_detector.advanced_preprocessing),
+            ("Model Training", fraud_detector.train_enhanced_models),
+            ("Performance Comparison", fraud_detector.compare_models_performance)
+        ]
+
+        for i, (step_name, step_function) in enumerate(steps, 1):
+            print(f"\n🔹 Step {i}/{len(steps)}: {step_name}")
+            print("-" * 50)
+            step_function()
+
+        # Save model and demonstrate real-time detection
+        fraud_detector.save_model('enhanced_fraud_model.pkl')
+
+        print("\n" + "="*60)
+        print("🚀 REAL-TIME FRAUD DETECTION DEMO")
+        print("="*60)
+
+        detection_results = fraud_detector.real_time_detection_system(5)
+
+        # Final summary
+        display(HTML("""
+        <div style="background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color:white; padding:20px; border-radius:15px; text-align:center;">
+            <h2>✅ Fraud Detection System Successfully Deployed!</h2>
+            <p>System is ready for real-time transaction monitoring with enhanced accuracy and alerting.</p>
+        </div>
+        """))
